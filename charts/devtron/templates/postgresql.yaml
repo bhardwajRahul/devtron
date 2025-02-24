@@ -113,11 +113,13 @@ spec:
         release: "devtron"
         role: master
     spec:
+      {{- include "common.schedulerConfig" (dict "nodeSelector" $.Values.components.postgres.nodeSelector "tolerations" $.Values.components.postgres.tolerations "imagePullSecrets" $.Values.components.postgres.imagePullSecrets "global" $.Values.global) | indent 6 }}
+      serviceAccountName: devtron-default-sa
       securityContext:
         fsGroup: 1001
       initContainers:
         - name: init-chmod-data
-          image: "quay.io/devtron/minideb:latest"
+          image: {{ include "common.image" (dict "component" $.Values.components.postgres "global" $.Values.global "extraImage" $.Values.components.postgres.initImage ) }}
           imagePullPolicy: "IfNotPresent"
           command:
             - /bin/sh
@@ -135,6 +137,9 @@ spec:
           {{- toYaml .initContainer.resources | nindent 12 }}
           {{- end }}
           {{- end }}
+          envFrom:
+            - configMapRef:
+                name: devtron-common-cm
           securityContext:
             runAsUser: 0
           volumeMounts:
@@ -145,7 +150,7 @@ spec:
               mountPath: /dev/shm
       containers:
         - name: postgresql-postgresql
-          image: {{ .image }}
+          image: {{ include "common.image" (dict "component" $.Values.components.postgres "global" $.Values.global ) }}
           imagePullPolicy: {{ .imagePullPolicy }}
           securityContext:
             runAsUser: 1001
@@ -171,6 +176,9 @@ spec:
               value: "no"
             - name: POSTGRESQL_SHARED_PRELOAD_LIBRARIES
               value: pgaudit, uuid-ossp
+          envFrom:
+            - configMapRef:
+                name: devtron-common-cm
           {{- if .resources }}
           resources:
           {{- toYaml .resources | nindent 12 }}
@@ -212,7 +220,7 @@ spec:
               mountPath: /bitnami/postgresql
               subPath:
         - name: metrics
-          image: quay.io/devtron/postgres_exporter:v0.4.7
+          image: {{ include "common.image" (dict "component" $.Values.components.postgres.metrics "global" $.Values.global ) }}
           imagePullPolicy: "IfNotPresent"
           env:
             - name: DATA_SOURCE_URI
@@ -224,6 +232,9 @@ spec:
                   key: postgresql-password
             - name: DATA_SOURCE_USER
               value: postgres
+          envFrom:
+          - configMapRef:
+              name: devtron-common-cm
           {{- if .postgresExporter }}
           {{- if .postgresExporter.resources }}
           resources:
@@ -266,6 +277,7 @@ spec:
       spec:
         accessModes:
           - "ReadWriteOnce"
+        {{- include "common.storageclass" $ | indent 8 }}
         resources:
           requests:
             storage: {{ .persistence.volumeSize }}
@@ -442,6 +454,8 @@ spec:
         app.kubernetes.io/name: postgres
         app.kubernetes.io/instance: devtron
     spec:
+      {{- include "common.schedulerConfig" (dict "nodeSelector" $.Values.components.postgres.nodeSelector "tolerations" $.Values.components.postgres.tolerations "imagePullSecrets" $.Values.components.postgres.imagePullSecrets "global" $.Values.global) | indent 6 }}
+      serviceAccountName: devtron-default-sa
       securityContext:
         fsGroup: 999
       initContainers:
@@ -453,7 +467,7 @@ spec:
             runAsGroup: 999
             runAsNonRoot: true
             runAsUser: 999
-          image: {{ .armImage }}
+          image: {{ include "common.image" (dict "component" $.Values.components.postgres "global" $.Values.global "extraImage" $.Values.components.postgres.armImage ) }}
           imagePullPolicy: {{ .imagePullPolicy }}
           {{- if .initContainer }}
           {{- if .initContainer.resources }}
@@ -461,6 +475,9 @@ spec:
           {{- toYaml .initContainer.resources | nindent 12 }}
           {{- end }}
           {{- end }}
+          envFrom:
+            - configMapRef:
+                name: devtron-common-cm
           volumeMounts:
             - mountPath: /customscripts
               name: customscripts-volume
@@ -480,7 +497,7 @@ spec:
             runAsGroup: 999
             runAsNonRoot: true
             runAsUser: 999
-          image: {{ .armImage }}
+          image: {{ include "common.image" (dict "component" $.Values.components.postgres "global" $.Values.global "extraImage" $.Values.components.postgres.armImage ) }}
           imagePullPolicy: {{ .imagePullPolicy }}
           {{- if .resources }}
           resources:
@@ -501,6 +518,8 @@ spec:
           envFrom:
             - secretRef:
                 name: postgresql-postgresql
+            - configMapRef:
+                name: devtron-common-cm
           startupProbe:
             exec:
               command:
@@ -546,7 +565,7 @@ spec:
             - mountPath: /etc/postgresql
               name: configs
         - name: metrics
-          image: prometheuscommunity/postgres-exporter:v0.10.1
+          image: {{ include "common.image" (dict "component" $.Values.components.postgres.metrics "global" $.Values.global "extraImage" $.Values.components.postgres.metrics.armImage ) }}
           imagePullPolicy: "IfNotPresent"
           env:
             - name: DATA_SOURCE_URI
@@ -556,6 +575,9 @@ spec:
                 secretKeyRef:
                   name: postgresql-postgresql
                   key: postgresql-password
+          envFrom:
+            - configMapRef:
+                name: devtron-common-cm
             - name: DATA_SOURCE_USER
               value: postgres
           {{- if .postgresExporter }}
@@ -609,6 +631,7 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
+        {{- include "common.storageclass" $ | indent 8 }}
         resources:
           requests:
             storage: {{ .persistence.volumeSize }}

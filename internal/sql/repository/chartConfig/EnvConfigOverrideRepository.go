@@ -1,18 +1,17 @@
 /*
- * Copyright (c) 2020 Devtron Labs
+ * Copyright (c) 2020-2024. Devtron Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package chartConfig
@@ -20,7 +19,7 @@ package chartConfig
 import (
 	"github.com/devtron-labs/devtron/internal/sql/models"
 	chartRepoRepository "github.com/devtron-labs/devtron/pkg/chartRepo/repository"
-	"github.com/devtron-labs/devtron/pkg/cluster/repository"
+	"github.com/devtron-labs/devtron/pkg/cluster/environment/repository"
 	"github.com/devtron-labs/devtron/pkg/sql"
 	"github.com/go-pg/pg"
 	"github.com/juju/errors"
@@ -43,14 +42,21 @@ type EnvConfigOverride struct {
 	IsOverride        bool                        `sql:"is_override,notnull"`
 	IsBasicViewLocked bool                        `sql:"is_basic_view_locked,notnull"`
 	CurrentViewEditor models.ChartsViewEditorType `sql:"current_view_editor"`
+	MergeStrategy     models.MergeStrategy        `sql:"merge_strategy"`
 	sql.AuditLog
+	ResolvedEnvOverrideValues string            `sql:"-"`
+	VariableSnapshot          map[string]string `sql:"-"`
+	//ResolvedEnvOverrideValuesForCM string            `sql:"-"`
+	VariableSnapshotForCM map[string]string `sql:"-"`
+	//ResolvedEnvOverrideValuesForCS string            `sql:"-"`
+	VariableSnapshotForCS map[string]string `sql:"-"`
 }
 
 type EnvConfigOverrideRepository interface {
 	Save(*EnvConfigOverride) error
 	GetByChartAndEnvironment(chartId, targetEnvironmentId int) (*EnvConfigOverride, error)
 	ActiveEnvConfigOverride(appId, environmentId int) (*EnvConfigOverride, error) //successful env config
-	Get(id int) (*EnvConfigOverride, error)
+	GetByIdIncludingInactive(id int) (*EnvConfigOverride, error)
 	//this api updates only EnvOverrideValues, EnvMergedValues, Status, ManualReviewed, active based on id
 	UpdateProperties(config *EnvConfigOverride) error
 	GetByEnvironment(targetEnvironmentId int) ([]EnvConfigOverride, error)
@@ -59,6 +65,7 @@ type EnvConfigOverrideRepository interface {
 	UpdateEnvConfigStatus(config *EnvConfigOverride) error
 	Delete(envConfigOverride *EnvConfigOverride) error
 	FindLatestChartForAppByAppIdAndEnvId(appId, targetEnvironmentId int) (*EnvConfigOverride, error)
+	FindChartRefIdsForLatestChartForAppByAppIdAndEnvIds(appId int, targetEnvironmentIds []int) (map[int]int, error)
 	FindChartByAppIdAndEnvIdAndChartRefId(appId, targetEnvironmentId int, chartRefId int) (*EnvConfigOverride, error)
 	Update(envConfigOverride *EnvConfigOverride) (*EnvConfigOverride, error)
 	FindChartForAppByAppIdAndEnvId(appId, targetEnvironmentId int) (*EnvConfigOverride, error)
@@ -181,12 +188,12 @@ func (r EnvConfigOverrideRepositoryImpl) GetByChartAndEnvironment(chartId, targe
 	return eco, err
 }
 
-func (r EnvConfigOverrideRepositoryImpl) Get(id int) (*EnvConfigOverride, error) {
+func (r EnvConfigOverrideRepositoryImpl) GetByIdIncludingInactive(id int) (*EnvConfigOverride, error) {
 	eco := &EnvConfigOverride{}
 	err := r.dbConnection.
 		Model(eco).
-		Where("env_config_override.id = ?", id).
 		Column("env_config_override.*", "Chart").
+		Where("env_config_override.id = ?", id).
 		Select()
 	return eco, err
 }
@@ -207,6 +214,7 @@ func (r EnvConfigOverrideRepositoryImpl) UpdateProperties(config *EnvConfigOverr
 		Set("latest =?", config.Latest).
 		Set("is_basic_view_locked = ?", config.IsBasicViewLocked).
 		Set("current_view_editor = ?", config.CurrentViewEditor).
+		Set("merge_strategy = ?", config.MergeStrategy).
 		//Set("app_metrics_override =?", config.AppMetricsOverride).
 		WherePK().
 		Update()
@@ -272,6 +280,24 @@ func (r EnvConfigOverrideRepositoryImpl) FindLatestChartForAppByAppIdAndEnvId(ap
 		return nil, errors.NotFoundf(err.Error())
 	}
 	return eco, err
+}
+func (r EnvConfigOverrideRepositoryImpl) FindChartRefIdsForLatestChartForAppByAppIdAndEnvIds(appId int, targetEnvironmentIds []int) (map[int]int, error) {
+	var EnvChartDetail []struct {
+		ChartRefId int `sql:"chart_ref_id"`
+		EnvId      int `sql:"target_environment"`
+	}
+	envChartMap := make(map[int]int)
+
+	query := `select c.chart_ref_id, ceco.target_environment  from chart_env_config_override ceco inner join charts c on ceco.chart_id = c.id 
+                      where ceco.latest=? and c.app_id=? and ceco.target_environment in (?);`
+	_, err := r.dbConnection.Query(&EnvChartDetail, query, true, appId, pg.In(targetEnvironmentIds))
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range EnvChartDetail {
+		envChartMap[item.EnvId] = item.ChartRefId
+	}
+	return envChartMap, err
 }
 
 func (r EnvConfigOverrideRepositoryImpl) FindChartByAppIdAndEnvIdAndChartRefId(appId, targetEnvironmentId int, chartRefId int) (*EnvConfigOverride, error) {

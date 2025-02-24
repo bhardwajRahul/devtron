@@ -1,84 +1,126 @@
 /*
- * Copyright (c) 2020 Devtron Labs
+ * Copyright (c) 2020-2024. Devtron Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package chartRepo
 
 import (
 	"bytes"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/devtron-labs/devtron/internal/sql/repository"
+	util3 "github.com/devtron-labs/common-lib/utils/k8s"
+	"github.com/devtron-labs/devtron/client/argocdServer"
+	"github.com/devtron-labs/devtron/client/argocdServer/repoCredsK8sClient/bean"
+	bean2 "github.com/devtron-labs/devtron/pkg/cluster/bean"
+	"github.com/devtron-labs/devtron/pkg/cluster/read"
+	"io"
+	"io/ioutil"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/devtron-labs/devtron/internal/util"
 	chartRepoRepository "github.com/devtron-labs/devtron/pkg/chartRepo/repository"
-	"github.com/devtron-labs/devtron/pkg/cluster"
 	serverEnvConfig "github.com/devtron-labs/devtron/pkg/server/config"
 	"github.com/devtron-labs/devtron/pkg/sql"
 	util2 "github.com/devtron-labs/devtron/pkg/util"
-	"github.com/ghodss/yaml"
 	"go.uber.org/zap"
-	"io"
-	"io/ioutil"
 	"k8s.io/helm/pkg/getter"
 	"k8s.io/helm/pkg/helm/environment"
 	"k8s.io/helm/pkg/repo"
 	"k8s.io/helm/pkg/version"
-	"net/http"
-	"net/url"
-	"strings"
-	"time"
+)
+
+// secret keys
+const (
+	LABEL    string = "argocd.argoproj.io/secret-type"
+	NAME     string = "name"
+	USERNAME string = "username"
+	PASSWORD string = "password"
+	TYPE     string = "type"
+	URL      string = "url"
+	INSECRUE string = "insecure"
+)
+
+// secret values
+const (
+	HELM       string = "helm"
+	REPOSITORY string = "repository"
 )
 
 type ChartRepositoryService interface {
 	CreateChartRepo(request *ChartRepoDto) (*chartRepoRepository.ChartRepo, error)
-	UpdateDataInArgocdCm(request *ChartRepoDto) (*chartRepoRepository.ChartRepo, error)
+	UpdateData(request *ChartRepoDto) (*chartRepoRepository.ChartRepo, error)
 	GetChartRepoById(id int) (*ChartRepoDto, error)
 	GetChartRepoByName(name string) (*ChartRepoDto, error)
-	GetChartRepoList() ([]*ChartRepoDto, error)
+	GetChartRepoList() ([]*ChartRepoWithIsEditableDto, error)
+	GetChartRepoListMin() ([]*ChartRepoDto, error)
 	ValidateChartRepo(request *ChartRepoDto) *DetailedErrorHelmRepoValidation
 	ValidateAndCreateChartRepo(request *ChartRepoDto) (*chartRepoRepository.ChartRepo, error, *DetailedErrorHelmRepoValidation)
 	ValidateAndUpdateChartRepo(request *ChartRepoDto) (*chartRepoRepository.ChartRepo, error, *DetailedErrorHelmRepoValidation)
-	TriggerChartSyncManual() error
-	DeleteChartRepoFromArgocdCM(request *ChartRepoDto) error
+	TriggerChartSyncManual(chartProviderConfig *ChartProviderConfig) error
+	DeleteChartRepo(request *ChartRepoDto) error
 }
 
 type ChartRepositoryServiceImpl struct {
-	logger          *zap.SugaredLogger
-	repoRepository  chartRepoRepository.ChartRepoRepository
-	K8sUtil         *util.K8sUtil
-	clusterService  cluster.ClusterService
-	aCDAuthConfig   *util2.ACDAuthConfig
-	client          *http.Client
-	serverEnvConfig *serverEnvConfig.ServerEnvConfig
+	logger                   *zap.SugaredLogger
+	repoRepository           chartRepoRepository.ChartRepoRepository
+	K8sUtil                  *util3.K8sServiceImpl
+	aCDAuthConfig            *util2.ACDAuthConfig
+	client                   *http.Client
+	serverEnvConfig          *serverEnvConfig.ServerEnvConfig
+	argoClientWrapperService argocdServer.ArgoClientWrapperService
+	clusterReadService       read.ClusterReadService
 }
 
-func NewChartRepositoryServiceImpl(logger *zap.SugaredLogger, repoRepository chartRepoRepository.ChartRepoRepository, K8sUtil *util.K8sUtil, clusterService cluster.ClusterService,
-	aCDAuthConfig *util2.ACDAuthConfig, client *http.Client, serverEnvConfig *serverEnvConfig.ServerEnvConfig) *ChartRepositoryServiceImpl {
+func NewChartRepositoryServiceImpl(logger *zap.SugaredLogger, repoRepository chartRepoRepository.ChartRepoRepository, K8sUtil *util3.K8sServiceImpl,
+	aCDAuthConfig *util2.ACDAuthConfig, client *http.Client, serverEnvConfig *serverEnvConfig.ServerEnvConfig,
+	argoClientWrapperService argocdServer.ArgoClientWrapperService,
+	clusterReadService read.ClusterReadService) *ChartRepositoryServiceImpl {
 	return &ChartRepositoryServiceImpl{
-		logger:          logger,
-		repoRepository:  repoRepository,
-		K8sUtil:         K8sUtil,
-		clusterService:  clusterService,
-		aCDAuthConfig:   aCDAuthConfig,
-		client:          client,
-		serverEnvConfig: serverEnvConfig,
+		logger:                   logger,
+		repoRepository:           repoRepository,
+		K8sUtil:                  K8sUtil,
+		aCDAuthConfig:            aCDAuthConfig,
+		client:                   client,
+		serverEnvConfig:          serverEnvConfig,
+		argoClientWrapperService: argoClientWrapperService,
+		clusterReadService:       clusterReadService,
 	}
 }
 
 func (impl *ChartRepositoryServiceImpl) CreateChartRepo(request *ChartRepoDto) (*chartRepoRepository.ChartRepo, error) {
+	//metadata.name label in Secret doesn't support uppercase hence returning if user enters uppercase letters
+	if strings.ToLower(request.Name) != request.Name {
+		return nil, errors.New("invalid repo name: please use lowercase")
+	}
+	allChartsRepos, err := impl.repoRepository.FindAll()
+	if err != nil {
+		impl.logger.Errorw("error in getting list of all chart repos", "err", err)
+		return nil, err
+	}
+	if len(allChartsRepos) == 0 {
+		return nil, nil
+	}
+	for _, chart := range allChartsRepos {
+		if chart.Name == request.Name {
+			return nil, errors.New("repo with chart name already exists")
+		}
+	}
 	dbConnection := impl.repoRepository.GetConnection()
 	tx, err := dbConnection.Begin()
 	if err != nil {
@@ -99,50 +141,31 @@ func (impl *ChartRepositoryServiceImpl) CreateChartRepo(request *ChartRepoDto) (
 	chartRepo.Active = true
 	chartRepo.Default = false
 	chartRepo.External = true
+	chartRepo.AllowInsecureConnection = request.AllowInsecureConnection
 	err = impl.repoRepository.Save(chartRepo, tx)
 	if err != nil && !util.IsErrNoRows(err) {
+		impl.logger.Errorw("error in saving chart repo in DB", "err", err)
 		return nil, err
 	}
 
-	clusterBean, err := impl.clusterService.FindOne(cluster.DefaultClusterName)
+	isPrivateChart := false
+	if len(chartRepo.UserName) > 0 && len(chartRepo.Password) > 0 {
+		isPrivateChart = true
+	}
+
+	argoServerAddRequest := bean.ChartRepositoryAddRequest{
+		Name:                    chartRepo.Name,
+		Username:                chartRepo.UserName,
+		Password:                chartRepo.Password,
+		URL:                     chartRepo.Url,
+		AllowInsecureConnection: chartRepo.AllowInsecureConnection,
+		IsPrivateChart:          isPrivateChart,
+	}
+
+	err = impl.argoClientWrapperService.AddChartRepository(argoServerAddRequest)
 	if err != nil {
+		impl.logger.Errorw("error in adding chart repository to argocd server", "name", request.Name, "err", err)
 		return nil, err
-	}
-	cfg, err := impl.clusterService.GetClusterConfig(clusterBean)
-	if err != nil {
-		return nil, err
-	}
-
-	client, err := impl.K8sUtil.GetClient(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	updateSuccess := false
-	retryCount := 0
-	for !updateSuccess && retryCount < 3 {
-		retryCount = retryCount + 1
-
-		cm, err := impl.K8sUtil.GetConfigMap(impl.aCDAuthConfig.ACDConfigMapNamespace, impl.aCDAuthConfig.ACDConfigMapName, client)
-		if err != nil {
-			return nil, err
-		}
-		data, err := impl.updateRepoData(cm.Data, request)
-		if err != nil {
-			impl.logger.Warnw(" config map update failed", "err", err)
-			continue
-		}
-		cm.Data = data
-		_, err = impl.K8sUtil.UpdateConfigMap(impl.aCDAuthConfig.ACDConfigMapNamespace, cm, client)
-		if err != nil {
-			continue
-		}
-		if err == nil {
-			updateSuccess = true
-		}
-	}
-	if !updateSuccess {
-		return nil, fmt.Errorf("resouce version not matched with config map attempted 3 times")
 	}
 	err = tx.Commit()
 	if err != nil {
@@ -152,7 +175,16 @@ func (impl *ChartRepositoryServiceImpl) CreateChartRepo(request *ChartRepoDto) (
 	return chartRepo, nil
 }
 
-func (impl *ChartRepositoryServiceImpl) UpdateDataInArgocdCm(request *ChartRepoDto) (*chartRepoRepository.ChartRepo, error) {
+func (impl *ChartRepositoryServiceImpl) getCountOfDeployedCharts(chartRepoId int) (int, error) {
+	activeDeploymentCount, err := impl.repoRepository.FindDeploymentCountByChartRepoId(chartRepoId)
+	if err != nil {
+		impl.logger.Errorw("error in getting deployment count, CheckDeploymentCount", "chartRepoId", chartRepoId, "err", err)
+		return 0, err
+	}
+	return activeDeploymentCount, nil
+}
+
+func (impl *ChartRepositoryServiceImpl) UpdateData(request *ChartRepoDto) (*chartRepoRepository.ChartRepo, error) {
 	dbConnection := impl.repoRepository.GetConnection()
 	tx, err := dbConnection.Begin()
 	if err != nil {
@@ -165,6 +197,22 @@ func (impl *ChartRepositoryServiceImpl) UpdateDataInArgocdCm(request *ChartRepoD
 		return nil, err
 	}
 	previousName := chartRepo.Name
+	previousUrl := chartRepo.Url
+	//metadata.name label in Secret doesn't support uppercase hence returning if user enters uppercase letters in repo name
+	if request.Name != previousName && strings.ToLower(request.Name) != request.Name {
+		return nil, errors.New("invalid repo name: please use lowercase")
+	}
+
+	deployedChartCount, err := impl.getCountOfDeployedCharts(request.Id)
+	if err != nil {
+		impl.logger.Errorw("error in getting charts deployed via chart repo", "chartRepoId", request.Id, "err", err)
+		return nil, err
+	}
+
+	if deployedChartCount > 0 && (request.Name != previousName || request.Url != previousUrl) {
+		err = &util.ApiError{Code: "400", HttpStatusCode: 400, UserMessage: "cannot update, found charts deployed using this repo"}
+		return nil, err
+	}
 
 	chartRepo.Url = request.Url
 	chartRepo.Name = request.Name
@@ -177,59 +225,33 @@ func (impl *ChartRepositoryServiceImpl) UpdateDataInArgocdCm(request *ChartRepoD
 	chartRepo.Active = request.Active
 	chartRepo.UpdatedBy = request.UserId
 	chartRepo.UpdatedOn = time.Now()
-	//}
+	chartRepo.AllowInsecureConnection = request.AllowInsecureConnection
 	err = impl.repoRepository.Update(chartRepo, tx)
 	if err != nil && !util.IsErrNoRows(err) {
 		return nil, err
 	}
 
+	isPrivateChart := false
+	if len(chartRepo.UserName) > 0 && len(chartRepo.Password) > 0 {
+		isPrivateChart = true
+	}
+
+	argoServerUpdateRequest := bean.ChartRepositoryUpdateRequest{
+		PreviousName:            previousName,
+		PreviousURL:             previousUrl,
+		Name:                    chartRepo.Name,
+		AuthMode:                string(chartRepo.AuthMode),
+		Username:                chartRepo.UserName,
+		Password:                chartRepo.Password,
+		SSHKey:                  chartRepo.SshKey,
+		URL:                     chartRepo.Url,
+		AllowInsecureConnection: chartRepo.AllowInsecureConnection,
+		IsPrivateChart:          isPrivateChart,
+	}
 	// modify configmap
-	clusterBean, err := impl.clusterService.FindOne(cluster.DefaultClusterName)
+	err = impl.argoClientWrapperService.UpdateChartRepository(argoServerUpdateRequest)
 	if err != nil {
 		return nil, err
-	}
-	cfg, err := impl.clusterService.GetClusterConfig(clusterBean)
-	if err != nil {
-		return nil, err
-	}
-	client, err := impl.K8sUtil.GetClient(cfg)
-	if err != nil {
-		return nil, err
-	}
-	updateSuccess := false
-	retryCount := 0
-	for !updateSuccess && retryCount < 3 {
-		retryCount = retryCount + 1
-
-		cm, err := impl.K8sUtil.GetConfigMap(impl.aCDAuthConfig.ACDConfigMapNamespace, impl.aCDAuthConfig.ACDConfigMapName, client)
-		if err != nil {
-			return nil, err
-		}
-		var data map[string]string
-		// if the repo name has been updated then, create a new repo
-		data, err = impl.updateRepoData(cm.Data, request)
-		// if the repo name has been updated then, delete the previous repo
-		if previousName != request.Name {
-			data, err = impl.removeRepoData(cm.Data, previousName)
-		}
-		if err != nil {
-			impl.logger.Warnw(" config map update failed", "err", err)
-			continue
-		}
-
-		cm.Data = data
-		_, err = impl.K8sUtil.UpdateConfigMap(impl.aCDAuthConfig.ACDConfigMapNamespace, cm, client)
-		if err != nil {
-			impl.logger.Warnw(" config map failed", "err", err)
-			continue
-		}
-		if err == nil {
-			impl.logger.Warnw(" config map apply succeeded", "on retryCount", retryCount)
-			updateSuccess = true
-		}
-	}
-	if !updateSuccess {
-		return nil, fmt.Errorf("resouce version not matched with config map attempted 3 times")
 	}
 	err = tx.Commit()
 	if err != nil {
@@ -239,8 +261,8 @@ func (impl *ChartRepositoryServiceImpl) UpdateDataInArgocdCm(request *ChartRepoD
 	return chartRepo, nil
 }
 
-// DeleteChartRepoFromArgocdCM update the active state from DB and modify the argo-cm with repo URL to null
-func (impl *ChartRepositoryServiceImpl) DeleteChartRepoFromArgocdCM(request *ChartRepoDto) error {
+// DeleteChartRepo update the active state from DB and modify the argo-cm with repo URL to null in case of public chart and delete secret in case of private chart
+func (impl *ChartRepositoryServiceImpl) DeleteChartRepo(request *ChartRepoDto) error {
 	dbConnection := impl.repoRepository.GetConnection()
 	tx, err := dbConnection.Begin()
 	if err != nil {
@@ -272,46 +294,10 @@ func (impl *ChartRepositoryServiceImpl) DeleteChartRepoFromArgocdCM(request *Cha
 	}
 
 	// modify configmap
-	clusterBean, err := impl.clusterService.FindOne(cluster.DefaultClusterName)
+	err = impl.argoClientWrapperService.DeleteChartRepository(request.Name, request.Url)
 	if err != nil {
+		impl.logger.Errorw("error in deleting chart repository from argocd", "name", request.Name, "err", err)
 		return err
-	}
-	cfg, err := impl.clusterService.GetClusterConfig(clusterBean)
-	if err != nil {
-		return err
-	}
-	client, err := impl.K8sUtil.GetClient(cfg)
-	if err != nil {
-		return err
-	}
-	updateSuccess := false
-	retryCount := 0
-	//request.Url = ""
-	for !updateSuccess && retryCount < 3 {
-		retryCount = retryCount + 1
-
-		cm, err := impl.K8sUtil.GetConfigMap(impl.aCDAuthConfig.ACDConfigMapNamespace, impl.aCDAuthConfig.ACDConfigMapName, client)
-		if err != nil {
-			return err
-		}
-		data, err := impl.removeRepoData(cm.Data, request.Name)
-		if err != nil {
-			impl.logger.Warnw(" config map update failed", "err", err)
-			continue
-		}
-		cm.Data = data
-		_, err = impl.K8sUtil.UpdateConfigMap(impl.aCDAuthConfig.ACDConfigMapNamespace, cm, client)
-		if err != nil {
-			impl.logger.Warnw(" config map failed", "err", err)
-			continue
-		}
-		if err == nil {
-			impl.logger.Warnw(" config map apply succeeded", "on retryCount", retryCount)
-			updateSuccess = true
-		}
-	}
-	if !updateSuccess {
-		return fmt.Errorf("resouce version not matched with config map attempted 3 times")
 	}
 	err = tx.Commit()
 	if err != nil {
@@ -351,17 +337,18 @@ func (impl *ChartRepositoryServiceImpl) convertFromDbResponse(model *chartRepoRe
 	chartRepo.AccessToken = model.AccessToken
 	chartRepo.Default = model.Default
 	chartRepo.Active = model.Active
+	chartRepo.AllowInsecureConnection = model.AllowInsecureConnection
 	return chartRepo
 }
 
-func (impl *ChartRepositoryServiceImpl) GetChartRepoList() ([]*ChartRepoDto, error) {
-	var chartRepos []*ChartRepoDto
+func (impl *ChartRepositoryServiceImpl) GetChartRepoList() ([]*ChartRepoWithIsEditableDto, error) {
+	var chartRepos []*ChartRepoWithIsEditableDto
 	models, err := impl.repoRepository.FindAllWithDeploymentCount()
 	if err != nil && !util.IsErrNoRows(err) {
 		return nil, err
 	}
 	for _, model := range models {
-		chartRepo := &ChartRepoDto{}
+		chartRepo := &ChartRepoWithIsEditableDto{}
 		chartRepo.Id = model.Id
 		chartRepo.Name = model.Name
 		chartRepo.Url = model.Url
@@ -376,6 +363,32 @@ func (impl *ChartRepositoryServiceImpl) GetChartRepoList() ([]*ChartRepoDto, err
 		if model.ActiveDeploymentCount > 0 {
 			chartRepo.IsEditable = false
 		}
+		chartRepo.AllowInsecureConnection = model.AllowInsecureConnection
+		chartRepos = append(chartRepos, chartRepo)
+	}
+	return chartRepos, nil
+}
+
+func (impl *ChartRepositoryServiceImpl) GetChartRepoListMin() ([]*ChartRepoDto, error) {
+	var chartRepos []*ChartRepoDto
+	models, err := impl.repoRepository.FindAll()
+	if err != nil && !util.IsErrNoRows(err) {
+		return nil, err
+	}
+	for _, model := range models {
+		chartRepo := &ChartRepoDto{
+			Id:                      model.Id,
+			Name:                    model.Name,
+			Url:                     model.Url,
+			AuthMode:                model.AuthMode,
+			Password:                model.Password,
+			UserName:                model.UserName,
+			SshKey:                  model.SshKey,
+			AccessToken:             model.AccessToken,
+			Default:                 model.Default,
+			Active:                  model.Active,
+			AllowInsecureConnection: model.AllowInsecureConnection,
+		}
 		chartRepos = append(chartRepos, chartRepo)
 	}
 	return chartRepos, nil
@@ -383,6 +396,12 @@ func (impl *ChartRepositoryServiceImpl) GetChartRepoList() ([]*ChartRepoDto, err
 
 func (impl *ChartRepositoryServiceImpl) ValidateChartRepo(request *ChartRepoDto) *DetailedErrorHelmRepoValidation {
 	var detailedErrorHelmRepoValidation DetailedErrorHelmRepoValidation
+	if len(request.Name) < 3 || strings.Contains(request.Name, " ") {
+		impl.logger.Errorw("name should not contain white spaces and should contain min 3 chars")
+		detailedErrorHelmRepoValidation.CustomErrMsg = fmt.Sprintf("name should not contain white spaces and should have min 3 chars")
+		detailedErrorHelmRepoValidation.ActualErrMsg = fmt.Sprintf("name should not contain white spaces and should have min 3 chars")
+		return &detailedErrorHelmRepoValidation
+	}
 	helmRepoConfig := &repo.Entry{
 		Name:     request.Name,
 		URL:      request.Url,
@@ -440,9 +459,17 @@ func (impl *ChartRepositoryServiceImpl) ValidateAndCreateChartRepo(request *Char
 	if err != nil {
 		return nil, err, validationResult
 	}
+	if chartRepo == nil && err == nil {
+		//case when no entry for chart in chart_repo table and no need to trigger chart sync
+		return nil, nil, validationResult
+	}
 
 	// Trigger chart sync job, ignore error
-	err = impl.TriggerChartSyncManual()
+	chartProviderConfig := &ChartProviderConfig{
+		ChartProviderId: strconv.Itoa(chartRepo.Id),
+		IsOCIRegistry:   false,
+	}
+	err = impl.TriggerChartSyncManual(chartProviderConfig)
 	if err != nil {
 		impl.logger.Errorw("Error in triggering chart sync job manually ", "err", err)
 	}
@@ -455,13 +482,17 @@ func (impl *ChartRepositoryServiceImpl) ValidateAndUpdateChartRepo(request *Char
 	if validationResult.CustomErrMsg != ValidationSuccessMsg {
 		return nil, nil, validationResult
 	}
-	chartRepo, err := impl.UpdateDataInArgocdCm(request)
+	chartRepo, err := impl.UpdateData(request)
 	if err != nil {
 		return nil, err, validationResult
 	}
 
 	// Trigger chart sync job, ignore error
-	err = impl.TriggerChartSyncManual()
+	chartProviderConfig := &ChartProviderConfig{
+		ChartProviderId: strconv.Itoa(chartRepo.Id),
+		IsOCIRegistry:   false,
+	}
+	err = impl.TriggerChartSyncManual(chartProviderConfig)
 	if err != nil {
 		impl.logger.Errorw("Error in triggering chart sync job manually", "err", err)
 	}
@@ -469,21 +500,16 @@ func (impl *ChartRepositoryServiceImpl) ValidateAndUpdateChartRepo(request *Char
 	return chartRepo, nil, validationResult
 }
 
-func (impl *ChartRepositoryServiceImpl) TriggerChartSyncManual() error {
-	defaultClusterBean, err := impl.clusterService.FindOne(cluster.DefaultClusterName)
+func (impl *ChartRepositoryServiceImpl) TriggerChartSyncManual(chartProviderConfig *ChartProviderConfig) error {
+	defaultClusterBean, err := impl.clusterReadService.FindOne(bean2.DEFAULT_CLUSTER)
 	if err != nil {
 		impl.logger.Errorw("defaultClusterBean err, TriggerChartSyncManual", "err", err)
 		return err
 	}
 
-	defaultClusterConfig, err := impl.clusterService.GetClusterConfig(defaultClusterBean)
-	if err != nil {
-		impl.logger.Errorw("defaultClusterConfig err, TriggerChartSyncManual", "err", err)
-		return err
-	}
+	defaultClusterConfig := defaultClusterBean.GetClusterConfig()
 
-	manualAppSyncJobByteArr := manualAppSyncJobByteArr(impl.serverEnvConfig.AppSyncImage, impl.serverEnvConfig.AppSyncJobResourcesObj)
-
+	manualAppSyncJobByteArr := manualAppSyncJobByteArr(impl.serverEnvConfig.AppSyncImage, impl.serverEnvConfig.AppSyncJobResourcesObj, impl.serverEnvConfig.AppSyncServiceAccount, chartProviderConfig, impl.serverEnvConfig.ParallelismLimitForTagProcessing)
 	err = impl.K8sUtil.DeleteAndCreateJob(manualAppSyncJobByteArr, impl.aCDAuthConfig.ACDConfigMapNamespace, defaultClusterConfig)
 	if err != nil {
 		impl.logger.Errorw("DeleteAndCreateJob err, TriggerChartSyncManual", "err", err)
@@ -541,192 +567,4 @@ func (impl *ChartRepositoryServiceImpl) newChartRepository(cfg *repo.Entry, gett
 		IndexFile: repo.NewIndexFile(),
 		Client:    client,
 	}, nil, fmt.Sprintf("")
-}
-
-func (impl *ChartRepositoryServiceImpl) createRepoElement(request *ChartRepoDto) *AcdConfigMapRepositoriesDto {
-	repoData := &AcdConfigMapRepositoriesDto{}
-	if request.AuthMode == repository.AUTH_MODE_USERNAME_PASSWORD {
-		usernameSecret := &KeyDto{Name: request.UserName, Key: "username"}
-		passwordSecret := &KeyDto{Name: request.Password, Key: "password"}
-		repoData.PasswordSecret = passwordSecret
-		repoData.UsernameSecret = usernameSecret
-	} else if request.AuthMode == repository.AUTH_MODE_ACCESS_TOKEN {
-		// TODO - is it access token or ca cert nd secret
-	} else if request.AuthMode == repository.AUTH_MODE_SSH {
-		keySecret := &KeyDto{Name: request.SshKey, Key: "key"}
-		repoData.KeySecret = keySecret
-	}
-	repoData.Url = request.Url
-	repoData.Name = request.Name
-	repoData.Type = "helm"
-
-	return repoData
-}
-
-// updateRepoData update the request field in the argo-cm
-func (impl *ChartRepositoryServiceImpl) updateRepoData(data map[string]string, request *ChartRepoDto) (map[string]string, error) {
-	helmRepoStr := data["helm.repositories"]
-	helmRepoByte, err := yaml.YAMLToJSON([]byte(helmRepoStr))
-	if err != nil {
-		impl.logger.Errorw("error in json patch", "err", err)
-		return nil, err
-	}
-	var helmRepositories []*AcdConfigMapRepositoriesDto
-	err = json.Unmarshal(helmRepoByte, &helmRepositories)
-	if err != nil {
-		impl.logger.Errorw("error in unmarshal", "err", err)
-		return nil, err
-	}
-
-	rb, err := json.Marshal(helmRepositories)
-	if err != nil {
-		impl.logger.Errorw("error in marshal", "err", err)
-		return nil, err
-	}
-	helmRepositoriesYamlByte, err := yaml.JSONToYAML(rb)
-	if err != nil {
-		impl.logger.Errorw("error in yaml patch", "err", err)
-		return nil, err
-	}
-
-	//SETUP for repositories
-	var repositories []*AcdConfigMapRepositoriesDto
-	repoStr := data["repositories"]
-	repoByte, err := yaml.YAMLToJSON([]byte(repoStr))
-	if err != nil {
-		impl.logger.Errorw("error in json patch", "err", err)
-		return nil, err
-	}
-	err = json.Unmarshal(repoByte, &repositories)
-	if err != nil {
-		impl.logger.Errorw("error in unmarshal", "err", err)
-		return nil, err
-	}
-
-	found := false
-	for _, item := range repositories {
-		//if request chart repo found, then update its values
-		if item.Name == request.Name {
-			if request.AuthMode == repository.AUTH_MODE_USERNAME_PASSWORD {
-				usernameSecret := &KeyDto{Name: request.UserName, Key: "username"}
-				passwordSecret := &KeyDto{Name: request.Password, Key: "password"}
-				item.PasswordSecret = passwordSecret
-				item.UsernameSecret = usernameSecret
-			} else if request.AuthMode == repository.AUTH_MODE_ACCESS_TOKEN {
-				// TODO - is it access token or ca cert nd secret
-			} else if request.AuthMode == repository.AUTH_MODE_SSH {
-				keySecret := &KeyDto{Name: request.SshKey, Key: "key"}
-				item.KeySecret = keySecret
-			}
-			item.Url = request.Url
-			found = true
-		}
-	}
-
-	// if request chart repo not found, add new one
-	if !found {
-		repoData := impl.createRepoElement(request)
-		repositories = append(repositories, repoData)
-	}
-
-	rb, err = json.Marshal(repositories)
-	if err != nil {
-		impl.logger.Errorw("error in marshal", "err", err)
-		return nil, err
-	}
-	repositoriesYamlByte, err := yaml.JSONToYAML(rb)
-	if err != nil {
-		impl.logger.Errorw("error in yaml patch", "err", err)
-		return nil, err
-	}
-
-	if len(helmRepositoriesYamlByte) > 0 {
-		data["helm.repositories"] = string(helmRepositoriesYamlByte)
-	}
-	if len(repositoriesYamlByte) > 0 {
-		data["repositories"] = string(repositoriesYamlByte)
-	}
-	//dex config copy as it is
-	dexConfigStr := data["dex.config"]
-	data["dex.config"] = string([]byte(dexConfigStr))
-	return data, nil
-}
-
-// removeRepoData delete the request field from the argo-cm
-func (impl *ChartRepositoryServiceImpl) removeRepoData(data map[string]string, name string) (map[string]string, error) {
-	helmRepoStr := data["helm.repositories"]
-	helmRepoByte, err := yaml.YAMLToJSON([]byte(helmRepoStr))
-	if err != nil {
-		impl.logger.Errorw("error in json patch", "err", err)
-		return nil, err
-	}
-	var helmRepositories []*AcdConfigMapRepositoriesDto
-	err = json.Unmarshal(helmRepoByte, &helmRepositories)
-	if err != nil {
-		impl.logger.Errorw("error in unmarshal", "err", err)
-		return nil, err
-	}
-
-	rb, err := json.Marshal(helmRepositories)
-	if err != nil {
-		impl.logger.Errorw("error in marshal", "err", err)
-		return nil, err
-	}
-	helmRepositoriesYamlByte, err := yaml.JSONToYAML(rb)
-	if err != nil {
-		impl.logger.Errorw("error in yaml patch", "err", err)
-		return nil, err
-	}
-
-	//SETUP for repositories
-	var repositories []*AcdConfigMapRepositoriesDto
-	repoStr := data["repositories"]
-	repoByte, err := yaml.YAMLToJSON([]byte(repoStr))
-	if err != nil {
-		impl.logger.Errorw("error in json patch", "err", err)
-		return nil, err
-	}
-	err = json.Unmarshal(repoByte, &repositories)
-	if err != nil {
-		impl.logger.Errorw("error in unmarshal", "err", err)
-		return nil, err
-	}
-
-	found := false
-	for index, item := range repositories {
-		//if request chart repo found, then delete its values
-		if item.Name == name {
-			repositories = append(repositories[:index], repositories[index+1:]...)
-			found = true
-			break
-		}
-	}
-
-	// if request chart repo not found, add new one
-	if !found {
-		impl.logger.Errorw("Repo not found", "err", err)
-		return nil, fmt.Errorf("Repo not found in config-map")
-	}
-
-	rb, err = json.Marshal(repositories)
-	if err != nil {
-		impl.logger.Errorw("error in marshal", "err", err)
-		return nil, err
-	}
-	repositoriesYamlByte, err := yaml.JSONToYAML(rb)
-	if err != nil {
-		impl.logger.Errorw("error in yaml patch", "err", err)
-		return nil, err
-	}
-
-	if len(helmRepositoriesYamlByte) > 0 {
-		data["helm.repositories"] = string(helmRepositoriesYamlByte)
-	}
-	if len(repositoriesYamlByte) > 0 {
-		data["repositories"] = string(repositoriesYamlByte)
-	}
-	//dex config copy as it is
-	dexConfigStr := data["dex.config"]
-	data["dex.config"] = string([]byte(dexConfigStr))
-	return data, nil
 }

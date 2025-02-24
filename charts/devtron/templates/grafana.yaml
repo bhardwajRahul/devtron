@@ -12,19 +12,24 @@ kind: Job
 metadata:
   name: grafana-org-job
 spec:
+  ttlSecondsAfterFinished: 1000
   template:
     spec:
+      {{- include "common.schedulerConfig" (dict "nodeSelector" $.Values.monitoring.grafana.nodeSelector "tolerations" $.Values.monitoring.grafana.tolerations "imagePullSecrets" $.Values.monitoring.grafana.imagePullSecrets "global" $.Values.global) | indent 6 }}
       serviceAccountName: devtron
       containers:
       - name: grafana-restart
-        image: "quay.io/devtron/kubectl:latest"
+        image: {{ include "common.image" (dict "component" $.Values.components.migrator "global" $.Values.global "extraImage" $.Values.components.migrator.kubectlImage ) }}
         command: ["sh", "/tmp/kubectl-grafana.sh"]
+        envFrom:
+        - configMapRef:
+            name: devtron-common-cm
         volumeMounts:
           - name: grafana-org-volume
             mountPath: "/tmp/"
       initContainers:
       - name: grafana-org
-        image: quay.io/devtron/k8s-utils:tutum-curl
+        image: {{ include "common.image" (dict "component" $.Values.monitoring.grafana "global" $.Values.global "extraImage" $.Values.monitoring.grafana.grafanaOrgJob.curlImage ) }}
         command: ["sh","/tmp/org.sh"]
         env:
           - name: GRAFANA_PASSWORD
@@ -344,6 +349,7 @@ metadata:
 spec:
   accessModes:
     - "ReadWriteOnce"
+  {{- include "common.storageclass" $ | indent 2 }}
   resources:
     requests:
       storage: {{ $.Values.monitoring.grafana.persistence.storage }}
@@ -510,27 +516,32 @@ spec:
         fsGroup: 472
         runAsGroup: 472
         runAsUser: 472
+      {{- include "common.schedulerConfig" (dict "nodeSelector" $.Values.monitoring.grafana.nodeSelector "tolerations" $.Values.monitoring.grafana.tolerations "imagePullSecrets" $.Values.monitoring.grafana.imagePullSecrets "global" $.Values.global) | indent 6 }}
       initContainers:
         - name: init-chown-data
-          image: "quay.io/devtron/busybox:1.31.1"
+          image: {{ include "common.image" (dict "component" $.Values.monitoring.grafana "global" $.Values.global "extraImage" $.Values.monitoring.grafana.busyboxImage ) }}
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsNonRoot: false
             runAsUser: 0
           command: ["chown", "-R", "472:472", "/var/lib/grafana"]
-          resources:
-            {}
+          envFrom:
+          - configMapRef:
+              name: devtron-common-cm
+          resources: {}
           volumeMounts:
             - name: storage
               mountPath: "/var/lib/grafana"
         - name: download-dashboards
-          image: "quay.io/devtron/curl:7.73.0"
+          image: {{ include "common.image" (dict "component" $.Values.monitoring.grafana "global" $.Values.global "extraImage" $.Values.monitoring.grafana.grafanaDashboards.curlImage ) }}
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh"]
           args: [ "-c", "mkdir -p /var/lib/grafana/dashboards/default && /bin/sh /etc/grafana/download_dashboards.sh" ]
-          resources:
-            {}
+          resources: {}
           env:
+          envFrom:
+          - configMapRef:
+              name: devtron-common-cm
           volumeMounts:
             - name: config
               mountPath: "/etc/grafana/download_dashboards.sh"
@@ -538,7 +549,7 @@ spec:
             - name: storage
               mountPath: "/var/lib/grafana"
         - name: grafana-sc-datasources
-          image: "quay.io/kiwigrid/k8s-sidecar:1.1.0"
+          image: {{ include "common.image" (dict "component" $.Values.monitoring.grafana.grafanaDashboards "global" $.Values.global ) }}
           imagePullPolicy: IfNotPresent
           env:
             - name: METHOD
@@ -557,7 +568,7 @@ spec:
       containers:
       {{- with $.Values.monitoring.grafana.grafanaDashboards }}
         - name: grafana-sc-dashboard
-          image: {{ .image }}
+          image: {{ include "common.image" (dict "component" $.Values.monitoring.grafana.grafanaDashboards "global" $.Values.global ) }}
           imagePullPolicy: {{ .imagePullPolicy }}
           env:
             - name: METHOD
@@ -568,17 +579,23 @@ spec:
               value: "/tmp/dashboards"
             - name: RESOURCE
               value: "both"
+          envFrom:
+          - configMapRef:
+              name: devtron-common-cm
           {{- if .resources }}
           resources:
 {{ toYaml .resources | indent 12 }}
           {{- end }}
+          envFrom:
+          - configMapRef:
+              name: devtron-common-cm
           volumeMounts:
             - name: sc-dashboard-volume
               mountPath: "/tmp/dashboards"
           {{- end }}
       {{- with $.Values.monitoring.grafana}}
         - name: grafana
-          image: {{ .image }}
+          image: {{ include "common.image" (dict "component" $.Values.monitoring.grafana "global" $.Values.global ) }}
           imagePullPolicy: {{ .imagePullPolicy }}
           volumeMounts:
             - name: config
@@ -614,6 +631,9 @@ spec:
                 secretKeyRef:
                   name: devtron-grafana-cred-secret
                   key: admin-password
+          envFrom:
+          - configMapRef:
+              name: devtron-common-cm
           {{- if .resources }}
           resources:
 {{ toYaml .resources | indent 12 }}
@@ -660,9 +680,10 @@ metadata:
   namespace: devtroncd
 spec:
   serviceAccountName: devtron-grafana-test
+  {{- include "common.schedulerConfig" (dict "nodeSelector" $.Values.monitoring.grafana.nodeSelector "tolerations" $.Values.monitoring.grafana.tolerations "imagePullSecrets" $.Values.monitoring.grafana.imagePullSecrets "global" $.Values.global) | indent 2 }}
   containers:
     - name: devtron-test
-      image: "quay.io/devtron/bats:v1.4.1"
+      image: {{ include "common.image" (dict "component" $.Values.monitoring.grafana "global" $.Values.global "extraImage" $.Values.monitoring.grafana.batsImage ) }}
       imagePullPolicy: "IfNotPresent"
       command: ["/opt/bats/bin/bats", "-t", "/tests/run.sh"]
       volumeMounts:
