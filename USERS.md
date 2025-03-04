@@ -1,0 +1,38 @@
+# Who is using Devtron?
+
+As the community grows, we want to keep track of the users and organizations using Devtron. If you're using Devtron, please raise a PR to add your organization name and a link to your webpage.
+
+Currently, Devtron is being used by the following organizations:
+
+1. [73strings](https://www.73strings.com/)
+2. [Apica](https://www.apica.io/)
+3. [Ather Energy](https://www.atherenergy.com/)
+4. [BharatPe](https://bharatpe.com/)
+5. [Birdeye](https://birdeye.com/)
+6. [Bluecopa](https://www.bluecopa.com/) 
+7. [Careers 360](https://www.careers360.com/)
+8. [Chitale Bandhu](https://www.chitalebandhu.in/) 
+9.  [Comcast](https://corporate.comcast.com/)
+10. [Delhivery](https://www.delhivery.com/)
+11. [Empuls](https://www.empuls.io/)
+12. [EMT Madrid](https://www.emtmadrid.es/Home)
+13. [Encircle Marketing](https://encircle-marketing.com/)
+14. [FTL Express](https://www.ftl-express.com/)
+15. [Genwise](https://www.genwise.club/)
+16. [HCL Tech](https://www.hcltech.com/)
+17. [Indiamart](https://www.indiamart.com/)
+18. [IPCortex](https://ipcortex.co.uk/)
+19. [Jivi.ai](https://www.jivi.ai/)
+20. [KHELGroup](https://thekhelgroup.com/)
+21. [Kenny LLC](https://kennyl.dev/)
+22. [Lemnisk](https://www.lemnisk.co/) 
+23. [MobileID](https://www.mobileid.ch/en)
+24. [OTPLess](https://otpless.com/)
+25. [University of Albany](https://www.albany.edu/)
+26. [Shiprocket](https://www.shiprocket.in/)
+27. [Spinny](https://www.spinny.com/)
+28. [Tata 1Mg](https://www.1mg.com/)
+29. [Texas Tech University](https://www.ttu.edu/)
+30. [TravClan](https://www.travclan.com/) 
+31. [Xoxoday](https://www.xoxoday.com/)
+32. [Zupee](https://www.zupee.com/)

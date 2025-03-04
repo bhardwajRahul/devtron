@@ -1,18 +1,17 @@
 /*
- * Copyright (c) 2020 Devtron Labs
+ * Copyright (c) 2020-2024. Devtron Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package router
@@ -33,8 +32,13 @@ func NewNotificationRouterImpl(notificationRestHandler restHandler.NotificationR
 	return &NotificationRouterImpl{notificationRestHandler: notificationRestHandler}
 }
 func (impl NotificationRouterImpl) InitNotificationRegRouter(configRouter *mux.Router) {
+	// to maintain backward compatibility, will be deprecated in future
 	configRouter.Path("").
 		HandlerFunc(impl.notificationRestHandler.SaveNotificationSettings).
+		Methods("POST")
+	// new router to save notification settings
+	configRouter.Path("/v2").
+		HandlerFunc(impl.notificationRestHandler.SaveNotificationSettingsV2).
 		Methods("POST")
 	configRouter.Path("").
 		HandlerFunc(impl.notificationRestHandler.UpdateNotificationSettings).
@@ -63,6 +67,13 @@ func (impl NotificationRouterImpl) InitNotificationRegRouter(configRouter *mux.R
 	configRouter.Path("/channel/smtp/{id}").
 		HandlerFunc(impl.notificationRestHandler.FindSMTPConfig).
 		Methods("GET")
+	configRouter.Path("/channel/webhook/{id}").
+		HandlerFunc(impl.notificationRestHandler.FindWebhookConfig).
+		Methods("GET")
+	configRouter.Path("/variables").
+		HandlerFunc(impl.notificationRestHandler.GetWebhookVariables).
+		Methods("GET")
+
 	configRouter.Path("/channel").
 		HandlerFunc(impl.notificationRestHandler.DeleteNotificationChannelConfig).
 		Methods("DELETE")
