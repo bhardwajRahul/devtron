@@ -1,4 +1,42 @@
 {{- with .Values.components.kubelink }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kubelink-secret
+  labels:
+    app: kubelink
+    release: devtron
+  annotations:
+    "helm.sh/resource-policy": keep
+type: Opaque
+{{- if .secrets }}
+data:
+{{- range $k, $v := .secrets }}
+  {{ $k }}: {{ $v | b64enc }}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubelink-cm
+  labels:
+    app: kubelink
+    release: devtron
+  annotations:
+    "helm.sh/resource-policy": keep
+{{- if .configs }}
+data:
+{{ toYaml .configs | indent 2 }}
+{{- if $.Values.installer.modules }}
+{{- if has "cicd" $.Values.installer.modules }}
+  RUN_HELM_INSTALL_IN_ASYNC_MODE: "true"
+{{- else }}
+  RUN_HELM_INSTALL_IN_ASYNC_MODE: "false"
+{{- end }}
+{{- end }}
+{{- end }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,6 +57,7 @@ spec:
       labels:
         app: kubelink
     spec:
+      {{- include "common.schedulerConfig" (dict "nodeSelector" $.Values.components.kubelink.nodeSelector "tolerations" $.Values.components.kubelink.tolerations "imagePullSecrets" $.Values.components.kubelink.imagePullSecrets "global" $.Values.global) | indent 6 }}
       terminationGracePeriodSeconds: 30
       restartPolicy: Always
       serviceAccount: devtron
@@ -28,7 +67,7 @@ spec:
       {{- end }}
       containers:
         - name: kubelink
-          image: {{ .image }}
+          image: {{ include "common.image" (dict "component" $.Values.components.kubelink "global" $.Values.global ) }}
           imagePullPolicy: {{ .imagePullPolicy }}
           {{- if and $.Values.global $.Values.global.containerSecurityContext }}
           securityContext:
@@ -45,6 +84,20 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            {{- if .dbconfig }}
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .dbconfig.secretName }}
+                  key: {{ .dbconfig.keyName }}
+            {{- end }}
+          envFrom:
+          - configMapRef:
+              name: kubelink-cm
+          - secretRef:
+              name: kubelink-secret
+          - configMapRef:
+              name: devtron-common-cm
           {{- if .resources }}        
           resources:
           {{- toYaml .resources | nindent 12 }}

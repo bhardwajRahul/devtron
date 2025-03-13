@@ -8,12 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ghodss/yaml"
 	log "github.com/sirupsen/logrus"
+	"sigs.k8s.io/yaml"
 
 	"github.com/argoproj/argo-cd/v2/util/config"
 	executil "github.com/argoproj/argo-cd/v2/util/exec"
 	pathutil "github.com/argoproj/argo-cd/v2/util/io/path"
+)
+
+const (
+	ResourcePolicyAnnotation = "helm.sh/resource-policy"
+	ResourcePolicyKeep       = "keep"
 )
 
 type HelmRepository struct {
@@ -93,7 +98,6 @@ func (h *helm) DependencyBuild() error {
 			}
 		} else {
 			_, err := h.cmd.RepoAdd(repo.Name, repo.Repo, repo.Creds, h.passCredentials)
-
 			if err != nil {
 				return err
 			}
@@ -125,7 +129,7 @@ func Version(shortForm bool) (string, error) {
 	// short: "v3.3.1+g249e521"
 	version, err := executil.RunWithRedactor(cmd, redactor)
 	if err != nil {
-		return "", fmt.Errorf("could not get helm version: %s", err)
+		return "", fmt.Errorf("could not get helm version: %w", err)
 	}
 	return strings.TrimSpace(version), nil
 }
@@ -133,7 +137,7 @@ func Version(shortForm bool) (string, error) {
 func (h *helm) GetParameters(valuesFiles []pathutil.ResolvedFilePath, appPath, repoRoot string) (map[string]string, error) {
 	var values []string
 	// Don't load values.yaml if it's an out-of-bounds link.
-	if _, _, err := pathutil.ResolveFilePath(appPath, repoRoot, "values.yaml", []string{}); err == nil {
+	if _, _, err := pathutil.ResolveValueFilePathOrUrl(appPath, repoRoot, "values.yaml", []string{}); err == nil {
 		out, err := h.cmd.inspectValues(".")
 		if err != nil {
 			return nil, err
@@ -155,7 +159,7 @@ func (h *helm) GetParameters(valuesFiles []pathutil.ResolvedFilePath, appPath, r
 			fileValues, err = os.ReadFile(file)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("failed to read value file %s: %s", file, err)
+			return nil, fmt.Errorf("failed to read value file %s: %w", file, err)
 		}
 		values = append(values, string(fileValues))
 	}
@@ -164,7 +168,7 @@ func (h *helm) GetParameters(valuesFiles []pathutil.ResolvedFilePath, appPath, r
 	for _, file := range values {
 		values := map[string]interface{}{}
 		if err := yaml.Unmarshal([]byte(file), &values); err != nil {
-			return nil, fmt.Errorf("failed to parse values: %s", err)
+			return nil, fmt.Errorf("failed to parse values: %w", err)
 		}
 		flatVals(values, output)
 	}

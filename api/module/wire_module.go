@@ -1,7 +1,25 @@
+/*
+ * Copyright (c) 2024. Devtron Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package module
 
 import (
 	"github.com/devtron-labs/devtron/pkg/module"
+	"github.com/devtron-labs/devtron/pkg/module/bean"
+	"github.com/devtron-labs/devtron/pkg/module/read"
 	moduleRepo "github.com/devtron-labs/devtron/pkg/module/repo"
 	moduleDataStore "github.com/devtron-labs/devtron/pkg/module/store"
 	"github.com/google/wire"
@@ -12,9 +30,11 @@ var ModuleWireSet = wire.NewSet(
 	wire.Bind(new(module.ModuleActionAuditLogRepository), new(*module.ModuleActionAuditLogRepositoryImpl)),
 	moduleRepo.NewModuleRepositoryImpl,
 	wire.Bind(new(moduleRepo.ModuleRepository), new(*moduleRepo.ModuleRepositoryImpl)),
+	read.NewModuleReadServiceImpl,
+	wire.Bind(new(read.ModuleReadService), new(*read.ModuleReadServiceImpl)),
 	moduleRepo.NewModuleResourceStatusRepositoryImpl,
 	wire.Bind(new(moduleRepo.ModuleResourceStatusRepository), new(*moduleRepo.ModuleResourceStatusRepositoryImpl)),
-	module.ParseModuleEnvConfig,
+	bean.ParseModuleEnvConfig,
 	moduleDataStore.InitModuleDataStore,
 	module.NewModuleServiceHelperImpl,
 	wire.Bind(new(module.ModuleServiceHelper), new(*module.ModuleServiceHelperImpl)),

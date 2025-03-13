@@ -1,24 +1,23 @@
 /*
- * Copyright (c) 2020 Devtron Labs
+ * Copyright (c) 2020-2024. Devtron Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package repository
 
 import (
-	"github.com/devtron-labs/devtron/api/bean"
+	"github.com/devtron-labs/devtron/api/bean/AppView"
 	"github.com/devtron-labs/devtron/pkg/sql"
 	"github.com/go-pg/pg"
 	"go.uber.org/zap"
@@ -30,7 +29,7 @@ type LinkoutsRepository interface {
 	GetAll() ([]LinkoutsModel, error)
 	Update(model *LinkoutsModel) (*LinkoutsModel, error)
 	FetchLinkoutsByAppIdAndEnvId(appId int, envId int) ([]LinkoutsModel, error)
-	FetchLinkoutById(Id int) (bean.LinkOuts, error)
+	FetchLinkoutById(Id int) (AppView.LinkOuts, error)
 }
 
 type LinkoutsRepositoryImpl struct {
@@ -90,8 +89,8 @@ func (impl LinkoutsRepositoryImpl) FetchLinkoutsByAppIdAndEnvId(appId int, envId
 	return models, err
 }
 
-func (impl LinkoutsRepositoryImpl) FetchLinkoutById(Id int) (bean.LinkOuts, error) {
-	var linkout bean.LinkOuts
+func (impl LinkoutsRepositoryImpl) FetchLinkoutById(Id int) (AppView.LinkOuts, error) {
+	var linkout AppView.LinkOuts
 	query := "" +
 		" SELECT l.id, l.name , l.link, a.app_name, e.environment_name as env_name" +
 		" from app_env_linkouts l" +

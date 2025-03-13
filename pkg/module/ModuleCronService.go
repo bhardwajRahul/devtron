@@ -1,18 +1,17 @@
 /*
- * Copyright (c) 2020 Devtron Labs
+ * Copyright (c) 2020-2024. Devtron Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package module
@@ -21,12 +20,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	client "github.com/devtron-labs/devtron/api/helm-app"
+	"github.com/devtron-labs/devtron/api/helm-app/gRPC"
+	client "github.com/devtron-labs/devtron/api/helm-app/service"
+	"github.com/devtron-labs/devtron/api/helm-app/service/bean"
+	bean2 "github.com/devtron-labs/devtron/pkg/module/bean"
 	moduleRepo "github.com/devtron-labs/devtron/pkg/module/repo"
 	moduleDataStore "github.com/devtron-labs/devtron/pkg/module/store"
 	serverBean "github.com/devtron-labs/devtron/pkg/server/bean"
 	serverEnvConfig "github.com/devtron-labs/devtron/pkg/server/config"
 	"github.com/devtron-labs/devtron/util"
+	cron2 "github.com/devtron-labs/devtron/util/cron"
 	"github.com/go-pg/pg"
 	"github.com/robfig/cron/v3"
 	"github.com/tidwall/gjson"
@@ -41,7 +44,7 @@ type ModuleCronService interface {
 type ModuleCronServiceImpl struct {
 	logger                         *zap.SugaredLogger
 	cron                           *cron.Cron
-	moduleEnvConfig                *ModuleEnvConfig
+	moduleEnvConfig                *bean2.ModuleEnvConfig
 	moduleRepository               moduleRepo.ModuleRepository
 	serverEnvConfig                *serverEnvConfig.ServerEnvConfig
 	helmAppService                 client.HelmAppService
@@ -50,9 +53,9 @@ type ModuleCronServiceImpl struct {
 	moduleDataStore                *moduleDataStore.ModuleDataStore
 }
 
-func NewModuleCronServiceImpl(logger *zap.SugaredLogger, moduleEnvConfig *ModuleEnvConfig, moduleRepository moduleRepo.ModuleRepository,
+func NewModuleCronServiceImpl(logger *zap.SugaredLogger, moduleEnvConfig *bean2.ModuleEnvConfig, moduleRepository moduleRepo.ModuleRepository,
 	serverEnvConfig *serverEnvConfig.ServerEnvConfig, helmAppService client.HelmAppService, moduleServiceHelper ModuleServiceHelper, moduleResourceStatusRepository moduleRepo.ModuleResourceStatusRepository,
-	moduleDataStore *moduleDataStore.ModuleDataStore) (*ModuleCronServiceImpl, error) {
+	moduleDataStore *moduleDataStore.ModuleDataStore, cronLogger *cron2.CronLoggerImpl) (*ModuleCronServiceImpl, error) {
 
 	moduleCronServiceImpl := &ModuleCronServiceImpl{
 		logger:                         logger,
@@ -70,7 +73,7 @@ func NewModuleCronServiceImpl(logger *zap.SugaredLogger, moduleEnvConfig *Module
 		// cron job to update module status
 		// initialise cron
 		cron := cron.New(
-			cron.WithChain())
+			cron.WithChain(cron.Recover(cronLogger)))
 		cron.Start()
 
 		// add function into cron
@@ -116,7 +119,7 @@ func (impl *ModuleCronServiceImpl) handleModuleStatus(moduleNameInput string) {
 
 	// update status timeout if module status is installing for more than 1 hour
 	for _, module := range modules {
-		if module.Status != ModuleStatusInstalling {
+		if module.Status != bean2.ModuleStatusInstalling {
 			continue
 		}
 		if len(moduleNameInput) > 0 && module.Name != moduleNameInput {
@@ -124,17 +127,17 @@ func (impl *ModuleCronServiceImpl) handleModuleStatus(moduleNameInput string) {
 		}
 		if time.Now().After(module.UpdatedOn.Add(1 * time.Hour)) {
 			// timeout case
-			impl.updateModuleStatus(module, ModuleStatusTimeout)
+			impl.updateModuleStatus(module, bean2.ModuleStatusTimeout)
 		} else if !util.IsBaseStack() {
 			// if module is cicd then insert as installed
-			if module.Name == ModuleNameCicd {
-				impl.updateModuleStatus(module, ModuleStatusInstalled)
+			if module.Name == bean2.ModuleNameCiCd {
+				impl.updateModuleStatus(module, bean2.ModuleStatusInstalled)
 			} else {
 				resourceTreeFilter, err := impl.buildResourceTreeFilter(module.Name)
 				if err != nil {
 					continue
 				}
-				appIdentifier := client.AppIdentifier{
+				appIdentifier := bean.AppIdentifier{
 					ClusterId:   1,
 					Namespace:   impl.serverEnvConfig.DevtronHelmReleaseNamespace,
 					ReleaseName: impl.serverEnvConfig.DevtronHelmReleaseName,
@@ -144,7 +147,7 @@ func (impl *ModuleCronServiceImpl) handleModuleStatus(moduleNameInput string) {
 					impl.logger.Errorw("Error occurred while fetching helm application detail to check if module is installed", "moduleName", module.Name, "err", err)
 					continue
 				} else if appDetail.ApplicationStatus == serverBean.AppHealthStatusHealthy {
-					impl.updateModuleStatus(module, ModuleStatusInstalled)
+					impl.updateModuleStatus(module, bean2.ModuleStatusInstalled)
 				}
 
 				// save module resources status
@@ -158,7 +161,7 @@ func (impl *ModuleCronServiceImpl) handleModuleStatus(moduleNameInput string) {
 
 }
 
-func (impl *ModuleCronServiceImpl) saveModuleResourcesStatus(moduleId int, appDetail *client.AppDetail) error {
+func (impl *ModuleCronServiceImpl) saveModuleResourcesStatus(moduleId int, appDetail *gRPC.AppDetail) error {
 	impl.logger.Infow("updating module resources status", "moduleId", moduleId)
 	if appDetail == nil || appDetail.ResourceTreeResponse == nil {
 		return nil
@@ -233,7 +236,7 @@ func (impl *ModuleCronServiceImpl) saveModuleResourcesStatus(moduleId int, appDe
 	return nil
 }
 
-func (impl *ModuleCronServiceImpl) buildResourceTreeFilter(moduleName string) (*client.ResourceTreeFilter, error) {
+func (impl *ModuleCronServiceImpl) buildResourceTreeFilter(moduleName string) (*gRPC.ResourceTreeFilter, error) {
 	moduleMetaData, err := impl.moduleServiceHelper.GetModuleMetadata(moduleName)
 	if err != nil {
 		impl.logger.Errorw("Error in getting module metadata", "moduleName", moduleName, "err", err)
@@ -247,20 +250,20 @@ func (impl *ModuleCronServiceImpl) buildResourceTreeFilter(moduleName string) (*
 		return nil, nil
 	}
 
-	resourceFilterIfaceValue := ResourceFilter{}
+	resourceFilterIfaceValue := bean2.ResourceFilter{}
 	err = json.Unmarshal([]byte(resourceFilterIface), &resourceFilterIfaceValue)
 	if err != nil {
 		impl.logger.Errorw("Error while unmarshalling resourceFilterIface", "resourceFilterIface", resourceFilterIface, "err", err)
 		return nil, err
 	}
 
-	var resourceTreeFilter *client.ResourceTreeFilter
+	var resourceTreeFilter *gRPC.ResourceTreeFilter
 
 	// handle global filter
 	globalFilter := resourceFilterIfaceValue.GlobalFilter
 	if globalFilter != nil {
-		resourceTreeFilter = &client.ResourceTreeFilter{
-			GlobalFilter: &client.ResourceIdentifier{
+		resourceTreeFilter = &gRPC.ResourceTreeFilter{
+			GlobalFilter: &gRPC.ResourceIdentifier{
 				Labels: globalFilter.Labels,
 			},
 		}
@@ -268,27 +271,27 @@ func (impl *ModuleCronServiceImpl) buildResourceTreeFilter(moduleName string) (*
 	}
 
 	// otherwise handle gvk level
-	var resourceFilters []*client.ResourceFilter
+	var resourceFilters []*gRPC.ResourceFilter
 	for _, gvkLevelFilters := range resourceFilterIfaceValue.GvkLevelFilters {
 		gvk := gvkLevelFilters.Gvk
-		resourceFilters = append(resourceFilters, &client.ResourceFilter{
-			Gvk: &client.Gvk{
+		resourceFilters = append(resourceFilters, &gRPC.ResourceFilter{
+			Gvk: &gRPC.Gvk{
 				Group:   gvk.Group,
 				Version: gvk.Version,
 				Kind:    gvk.Kind,
 			},
-			ResourceIdentifier: &client.ResourceIdentifier{
+			ResourceIdentifier: &gRPC.ResourceIdentifier{
 				Labels: gvkLevelFilters.ResourceIdentifier.Labels,
 			},
 		})
 	}
-	resourceTreeFilter = &client.ResourceTreeFilter{
+	resourceTreeFilter = &gRPC.ResourceTreeFilter{
 		ResourceFilters: resourceFilters,
 	}
 	return resourceTreeFilter, nil
 }
 
-func (impl *ModuleCronServiceImpl) updateModuleStatus(module moduleRepo.Module, status ModuleStatus) {
+func (impl *ModuleCronServiceImpl) updateModuleStatus(module moduleRepo.Module, status bean2.ModuleStatus) {
 	impl.logger.Debugw("updating module status", "name", module.Name, "status", status)
 	module.Status = status
 	module.UpdatedOn = time.Now()

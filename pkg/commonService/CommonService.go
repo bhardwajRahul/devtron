@@ -1,18 +1,17 @@
 /*
- * Copyright (c) 2020 Devtron Labs
+ * Copyright (c) 2020-2024. Devtron Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
 package commonService
@@ -22,91 +21,80 @@ import (
 	"github.com/devtron-labs/devtron/internal/sql/repository/app"
 	"github.com/devtron-labs/devtron/internal/sql/repository/chartConfig"
 	dockerRegistryRepository "github.com/devtron-labs/devtron/internal/sql/repository/dockerRegistry"
-	"github.com/devtron-labs/devtron/pkg/attributes"
+	helper2 "github.com/devtron-labs/devtron/internal/sql/repository/helper"
+	"github.com/devtron-labs/devtron/pkg/attributes/bean"
+	"github.com/devtron-labs/devtron/pkg/build/git/gitProvider/read"
 	chartRepoRepository "github.com/devtron-labs/devtron/pkg/chartRepo/repository"
-	repository3 "github.com/devtron-labs/devtron/pkg/cluster/repository"
-	repository2 "github.com/devtron-labs/devtron/pkg/team"
+	repository3 "github.com/devtron-labs/devtron/pkg/cluster/environment/repository"
+	"github.com/devtron-labs/devtron/pkg/deployment/gitOps/config"
+	read3 "github.com/devtron-labs/devtron/pkg/deployment/manifest/deploymentTemplate/read"
+	read2 "github.com/devtron-labs/devtron/pkg/team/read"
 	"github.com/go-pg/pg"
 	"go.uber.org/zap"
 )
 
 type CommonService interface {
-	FetchLatestChart(appId int, envId int) (*chartRepoRepository.Chart, error)
+	FetchLatestChartVersion(appId int, envId int) (string, error)
 	GlobalChecklist() (*GlobalChecklist, error)
+	EnvironmentVariableList() (*EnvironmentVariableList, error)
 }
 
 type CommonServiceImpl struct {
-	logger                      *zap.SugaredLogger
-	chartRepository             chartRepoRepository.ChartRepository
-	environmentConfigRepository chartConfig.EnvConfigOverrideRepository
-	gitOpsRepository            repository.GitOpsConfigRepository
-	dockerReg                   dockerRegistryRepository.DockerArtifactStoreRepository
-	attributeRepo               repository.AttributesRepository
-	gitProviderRepository       repository.GitProviderRepository
-	environmentRepository       repository3.EnvironmentRepository
-	teamRepository              repository2.TeamRepository
-	appRepository               app.AppRepository
+	logger                       *zap.SugaredLogger
+	chartRepository              chartRepoRepository.ChartRepository
+	environmentConfigRepository  chartConfig.EnvConfigOverrideRepository
+	dockerReg                    dockerRegistryRepository.DockerArtifactStoreRepository
+	attributeRepo                repository.AttributesRepository
+	gitProviderReadService       read.GitProviderReadService
+	environmentRepository        repository3.EnvironmentRepository
+	appRepository                app.AppRepository
+	gitOpsConfigReadService      config.GitOpsConfigReadService
+	commonBaseServiceImpl        *CommonBaseServiceImpl
+	envConfigOverrideReadService read3.EnvConfigOverrideService
+	teamReadService              read2.TeamReadService
 }
 
 func NewCommonServiceImpl(logger *zap.SugaredLogger,
 	chartRepository chartRepoRepository.ChartRepository,
 	environmentConfigRepository chartConfig.EnvConfigOverrideRepository,
-	gitOpsRepository repository.GitOpsConfigRepository,
 	dockerReg dockerRegistryRepository.DockerArtifactStoreRepository,
 	attributeRepo repository.AttributesRepository,
-	gitProviderRepository repository.GitProviderRepository,
-	environmentRepository repository3.EnvironmentRepository, teamRepository repository2.TeamRepository,
-	appRepository app.AppRepository) *CommonServiceImpl {
+	environmentRepository repository3.EnvironmentRepository,
+	appRepository app.AppRepository,
+	gitOpsConfigReadService config.GitOpsConfigReadService,
+	gitProviderReadService read.GitProviderReadService,
+	envConfigOverrideReadService read3.EnvConfigOverrideService,
+	commonBaseServiceImpl *CommonBaseServiceImpl,
+	teamReadService read2.TeamReadService) *CommonServiceImpl {
 	serviceImpl := &CommonServiceImpl{
-		logger:                      logger,
-		chartRepository:             chartRepository,
-		environmentConfigRepository: environmentConfigRepository,
-		gitOpsRepository:            gitOpsRepository,
-		dockerReg:                   dockerReg,
-		attributeRepo:               attributeRepo,
-		gitProviderRepository:       gitProviderRepository,
-		environmentRepository:       environmentRepository,
-		teamRepository:              teamRepository,
-		appRepository:               appRepository,
+		logger:                       logger,
+		chartRepository:              chartRepository,
+		environmentConfigRepository:  environmentConfigRepository,
+		dockerReg:                    dockerReg,
+		attributeRepo:                attributeRepo,
+		environmentRepository:        environmentRepository,
+		appRepository:                appRepository,
+		gitOpsConfigReadService:      gitOpsConfigReadService,
+		gitProviderReadService:       gitProviderReadService,
+		commonBaseServiceImpl:        commonBaseServiceImpl,
+		envConfigOverrideReadService: envConfigOverrideReadService,
+		teamReadService:              teamReadService,
 	}
 	return serviceImpl
 }
 
-type GlobalChecklist struct {
-	AppChecklist   *AppChecklist   `json:"appChecklist"`
-	ChartChecklist *ChartChecklist `json:"chartChecklist"`
-	IsAppCreated   bool            `json:"isAppCreated"`
-	UserId         int32           `json:"-"`
-}
-
-type ChartChecklist struct {
-	GitOps      int `json:"gitOps,omitempty"`
-	Project     int `json:"project"`
-	Environment int `json:"environment"`
-}
-
-type AppChecklist struct {
-	GitOps      int `json:"gitOps,omitempty"`
-	Project     int `json:"project"`
-	Git         int `json:"git"`
-	Environment int `json:"environment"`
-	Docker      int `json:"docker"`
-	HostUrl     int `json:"hostUrl"`
-	//ChartChecklist *ChartChecklist `json:",inline"`
-}
-
-func (impl *CommonServiceImpl) FetchLatestChart(appId int, envId int) (*chartRepoRepository.Chart, error) {
+func (impl *CommonServiceImpl) FetchLatestChartVersion(appId int, envId int) (string, error) {
 	var chart *chartRepoRepository.Chart
 	if appId > 0 && envId > 0 {
-		envOverride, err := impl.environmentConfigRepository.ActiveEnvConfigOverride(appId, envId)
+		envOverride, err := impl.envConfigOverrideReadService.ActiveEnvConfigOverride(appId, envId)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		//if chart is overrides in env, and not mark as overrides in db, it means it was not completed and refer to latest to the app.
 		if (envOverride.Id == 0) || (envOverride.Id > 0 && !envOverride.IsOverride) {
 			chart, err = impl.chartRepository.FindLatestChartForAppByAppId(appId)
 			if err != nil {
-				return nil, err
+				return "", err
 			}
 		} else {
 			//if chart is overrides in env, it means it may have different version than app level.
@@ -115,14 +103,17 @@ func (impl *CommonServiceImpl) FetchLatestChart(appId int, envId int) (*chartRep
 	} else if appId > 0 {
 		chartG, err := impl.chartRepository.FindLatestChartForAppByAppId(appId)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		chart = chartG
 
 		//TODO - note if secret create/update from global with property (new style).
 		// there may be older chart version in env overrides (and in that case it will be ignore, property and isBinary)
 	}
-	return chart, nil
+	if chart == nil {
+		return "", nil
+	}
+	return chart.ChartVersion, nil
 }
 
 func (impl *CommonServiceImpl) GlobalChecklist() (*GlobalChecklist, error) {
@@ -133,7 +124,7 @@ func (impl *CommonServiceImpl) GlobalChecklist() (*GlobalChecklist, error) {
 		return nil, err
 	}
 
-	attribute, err := impl.attributeRepo.FindByKey(attributes.HostUrlKey)
+	attribute, err := impl.attributeRepo.FindByKey(bean.HostUrlKey)
 	if err != nil && err != pg.ErrNoRows {
 		impl.logger.Errorw("GlobalChecklist, error while getting error", "err", err)
 		return nil, err
@@ -145,13 +136,13 @@ func (impl *CommonServiceImpl) GlobalChecklist() (*GlobalChecklist, error) {
 		return nil, err
 	}
 
-	git, err := impl.gitProviderRepository.FindAllActiveForAutocomplete()
+	git, err := impl.gitProviderReadService.GetAll()
 	if err != nil && err != pg.ErrNoRows {
 		impl.logger.Errorw("GlobalChecklist, error while getting error", "err", err)
 		return nil, err
 	}
 
-	project, err := impl.teamRepository.FindAllActive()
+	project, err := impl.teamReadService.FindAllActive()
 	if err != nil && err != pg.ErrNoRows {
 		impl.logger.Errorw("GlobalChecklist, error while getting error", "err", err)
 		return nil, err
@@ -191,7 +182,7 @@ func (impl *CommonServiceImpl) GlobalChecklist() (*GlobalChecklist, error) {
 		ChartChecklist: chartChecklist,
 	}
 
-	apps, err := impl.appRepository.FindAllActiveAppsWithTeam()
+	apps, err := impl.appRepository.FindAllActiveAppsWithTeam(helper2.CustomApp)
 	if err != nil && err != pg.ErrNoRows {
 		impl.logger.Errorw("GlobalChecklist, error while getting error", "err", err)
 		return nil, err
@@ -200,4 +191,8 @@ func (impl *CommonServiceImpl) GlobalChecklist() (*GlobalChecklist, error) {
 		config.IsAppCreated = true
 	}
 	return config, err
+}
+
+func (impl *CommonServiceImpl) EnvironmentVariableList() (*EnvironmentVariableList, error) {
+	return impl.commonBaseServiceImpl.EnvironmentVariableList()
 }
